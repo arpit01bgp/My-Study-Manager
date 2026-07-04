@@ -491,7 +491,7 @@
                 autoStartSegments: false,
                 longBreakInterval: 4,
                 alarmSound: 'bell',
-                googleWebhookUrl: 'https://script.google.com/macros/s/AKfycbyrgMpd3dn5TC-VZkhsktZuQLBvhdp6Co-U5UDFLA2ReBOGVTTNLgNLwUruQe5_4E2R/exec', // YOUR APPS WEBHOOK INTEGRATED
+                googleWebhookUrl: 'https://script.google.com/macros/s/AKfycbx9TCNjtGEMyAmb5tpqA6-IA7LPlCOHR47HtbQNGrE8MbID1_uU86XVMxgJrehRunGl/exec', // YOUR APPS WEBHOOK INTEGRATED
                 motivationEnabled: true
             },
 
@@ -517,13 +517,31 @@
             if (!dateInput) return new Date();
             if (dateInput instanceof Date) return dateInput;
             
-            if (typeof dateInput === 'string' && dateInput.includes('/')) {
-                const parts = dateInput.split('/');
-                if (parts.length === 3) {
-                    const d = parseInt(parts[0], 10);
-                    const m = parseInt(parts[1], 10) - 1;
-                    const y = parseInt(parts[2], 10);
-                    if (!isNaN(d) && !isNaN(m) && !isNaN(y)) {
+            if (typeof dateInput === 'string') {
+                const parts = dateInput.split(/[-/.]/);
+                if (parts.length >= 3) {
+                    const p0 = parseInt(parts[0], 10);
+                    const p1 = parseInt(parts[1], 10);
+                    let p2 = parseInt(parts[2], 10);
+                    // Extract year part cleanly in case of attached time strings like "2023 14:00"
+                    if(parts[2].length > 4) p2 = parseInt(parts[2].substring(0,4), 10);
+                    
+                    let y, m, d;
+                    if (p2 > 1000) { 
+                        y = p2;
+                        if (p0 > 12) { // DD/MM/YYYY
+                            d = p0; m = p1 - 1;
+                        } else if (p1 > 12) { // MM/DD/YYYY
+                            m = p0 - 1; d = p1;
+                        } else {
+                            // Default to DD/MM/YYYY as per our generation logic
+                            d = p0; m = p1 - 1;
+                        }
+                    } else if (p0 > 1000) { // YYYY/MM/DD
+                        y = p0; m = p1 - 1; d = p2;
+                    }
+                    
+                    if (y !== undefined && !isNaN(d) && !isNaN(m) && !isNaN(y)) {
                         return new Date(y, m, d);
                     }
                 }
@@ -840,7 +858,7 @@
         // Generate custom Google Apps Script code snippet with strict date normalizations
         function generateAppsScriptSnippet() {
             return `/*
-  Google Apps Script: Advanced Daily Segment Tracker (DD/MM/YYYY Alignment)
+  Google Apps Script: Advanced Daily Segment Tracker (DD/MM/YYYY Alignment with Row Merging)
   Instructions:
   1. Open your Google Sheet.
   2. Click Extensions -> Apps Script.
@@ -858,7 +876,6 @@ function doGet(e) {
     if (values.length > 1) {
       for (var i = 1; i < values.length; i++) {
         var row = values[i];
-        
         var rawDate = row[0];
         var dateStr = "";
         
@@ -868,15 +885,10 @@ function doGet(e) {
           var year = rawDate.getFullYear();
           dateStr = day + '/' + month + '/' + year;
         } else if (rawDate) {
-          // Normalize existing string formats to strict DD/MM/YYYY
-          var strParts = String(rawDate).split('/');
-          if (strParts.length === 3) {
-            var d = ('0' + parseInt(strParts[0], 10)).slice(-2);
-            var m = ('0' + parseInt(strParts[1], 10)).slice(-2);
-            var y = strParts[2];
-            dateStr = d + '/' + m + '/' + y;
-          } else {
-            dateStr = String(rawDate);
+          dateStr = String(rawDate).replace(/^'/, '').trim();
+          var parts = dateStr.split(/[-/.]/);
+          if (parts.length >= 3) {
+             dateStr = ('0'+parseInt(parts[0], 10)).slice(-2) + '/' + ('0'+parseInt(parts[1], 10)).slice(-2) + '/' + parts[2];
           }
         }
         
@@ -884,10 +896,10 @@ function doGet(e) {
           var subject = row[col];
           var durationHrs = parseFloat(row[col+1]);
           
-          if (subject && subject !== "" && !isNaN(durationHrs) && durationHrs > 0) {
+          if (subject && String(subject).trim() !== "" && !isNaN(durationHrs) && durationHrs > 0) {
             sessions.push({
               date: dateStr,
-              subject: subject,
+              subject: String(subject).trim(),
               duration: durationHrs * 60
             });
           }
@@ -903,56 +915,64 @@ function doGet(e) {
   }
 }
 
+function normalizeDateMatch(cellVal, targetDateStr) {
+    if (!cellVal) return false;
+    var tParts = targetDateStr.split('/');
+    var tDay = parseInt(tParts[0], 10);
+    var tMonth = parseInt(tParts[1], 10);
+    var tYear = parseInt(tParts[2], 10);
+
+    if (cellVal instanceof Date) {
+        var cDay = cellVal.getDate();
+        var cMonth = cellVal.getMonth() + 1;
+        var cYear = cellVal.getFullYear();
+        return (cYear === tYear) && 
+               ((cDay === tDay && cMonth === tMonth) || (cDay === tMonth && cMonth === tDay));
+    } else {
+        var sVal = String(cellVal).replace(/^'/, '').trim();
+        if (sVal === targetDateStr) return true;
+        
+        var cParts = sVal.split(/[-/.]/);
+        if (cParts.length >= 3) {
+            var p1 = parseInt(cParts[0], 10);
+            var p2 = parseInt(cParts[1], 10);
+            var p3 = parseInt(cParts[2], 10);
+            if (p3 === tYear || p1 === tYear) {
+                var d1 = (p3 === tYear) ? p1 : p3;
+                var d2 = p2;
+                return ((d1 === tDay && d2 === tMonth) || (d1 === tMonth && d2 === tDay));
+            }
+        }
+    }
+    return false;
+}
+
 function doPost(e) {
   try {
     var sheet = SpreadsheetApp.getActiveSpreadsheet().getActiveSheet();
     var data = JSON.parse(e.postData.contents);
     
-    var dateStr = data.date; // already sent as DD/MM/YYYY from browser
-    var subject = data.subject;
-    var durationMins = parseInt(data.duration);
-    var durationHrs = durationMins / 60; 
+    var dateStr = data.date; 
+    var subject = String(data.subject).trim();
+    var durationHrs = parseFloat(data.duration) / 60; 
     
     if (sheet.getLastRow() === 0) {
       sheet.appendRow(["Day", "Total Hours Studied", "Segment 1 Name", "Segment 1 Time (hrs)", "Segment 2 Name", "Segment 2 Time (hrs)", "Segment 3 Name", "Segment 3 Time (hrs)", "Segment 4 Name", "Segment 4 Time (hrs)", "Segment 5 Name", "Segment 5 Time (hrs)"]);
     }
     
-    var dataRange = sheet.getDataRange();
-    var values = dataRange.getValues();
-    
+    var values = sheet.getDataRange().getValues();
     var matchFound = false;
     var targetRowIndex = -1;
     var targetColIndex = -1;
     var lastRowIndexForDate = -1;
     
-    // Normalize date elements during compare to resolve mm/dd swapping
     for (var i = 1; i < values.length; i++) {
-      var cellVal = values[i][0];
-      var cellDateStr = "";
-      
-      if (cellVal instanceof Date) {
-        var day = ('0' + cellVal.getDate()).slice(-2);
-        var month = ('0' + (cellVal.getMonth() + 1)).slice(-2);
-        var year = cellVal.getFullYear();
-        cellDateStr = day + '/' + month + '/' + year;
-      } else if (cellVal) {
-        var strParts = String(cellVal).split('/');
-        if (strParts.length === 3) {
-          var d = ('0' + parseInt(strParts[0], 10)).slice(-2);
-          var m = ('0' + parseInt(strParts[1], 10)).slice(-2);
-          var y = strParts[2];
-          cellDateStr = d + '/' + m + '/' + y;
-        } else {
-          cellDateStr = String(cellVal);
-        }
-      }
-      
-      if (cellDateStr === dateStr) {
-        lastRowIndexForDate = i + 1;
+      if (normalizeDateMatch(values[i][0], dateStr)) {
+        lastRowIndexForDate = i + 1; 
         
-        // Search for subject in this row's 5 slots
         for (var col = 2; col <= 10; col += 2) {
-          if (values[i][col] === subject) {
+          var cellSubj = values[i][col];
+          if (cellSubj !== undefined && cellSubj !== null && String(cellSubj).trim().toLowerCase() === subject.toLowerCase()) {
             matchFound = true;
             targetRowIndex = i + 1;
             targetColIndex = col;
@@ -963,18 +983,21 @@ function doPost(e) {
     }
     
     if (matchFound) {
-      var existingTime = parseFloat(values[targetRowIndex - 1][targetColIndex + 1] || 0);
-      sheet.getRange(targetRowIndex, targetColIndex + 2).setValue(existingTime + durationHrs);
+      var prevTime = parseFloat(values[targetRowIndex - 1][targetColIndex + 1]);
+      if (isNaN(prevTime)) prevTime = 0;
+      sheet.getRange(targetRowIndex, targetColIndex + 2).setValue(prevTime + durationHrs);
       
-      var totalHrs = parseFloat(values[targetRowIndex - 1][1] || 0) + durationHrs;
-      sheet.getRange(targetRowIndex, 2).setValue(totalHrs);
+      var totalHrs = parseFloat(values[targetRowIndex - 1][1]);
+      if (isNaN(totalHrs)) totalHrs = 0;
+      sheet.getRange(targetRowIndex, 2).setValue(totalHrs + durationHrs);
       
     } else if (lastRowIndexForDate !== -1) {
       var lastRowData = values[lastRowIndexForDate - 1];
       var emptyColIndex = -1;
       
       for (var col = 2; col <= 10; col += 2) {
-        if (!lastRowData[col] || lastRowData[col] === "") {
+        var cellVal = lastRowData[col];
+        if (cellVal === undefined || cellVal === null || String(cellVal).trim() === "") {
           emptyColIndex = col;
           break;
         }
@@ -984,16 +1007,15 @@ function doPost(e) {
         sheet.getRange(lastRowIndexForDate, emptyColIndex + 1).setValue(subject);
         sheet.getRange(lastRowIndexForDate, emptyColIndex + 2).setValue(durationHrs);
         
-        var totalHrs = parseFloat(lastRowData[1] || 0) + durationHrs;
-        sheet.getRange(lastRowIndexForDate, 2).setValue(totalHrs);
+        var totalHrs = parseFloat(lastRowData[1]);
+        if (isNaN(totalHrs)) totalHrs = 0;
+        sheet.getRange(lastRowIndexForDate, 2).setValue(totalHrs + durationHrs);
       } else {
-        var newRow = [dateStr, durationHrs, subject, durationHrs, "", "", "", "", "", "", "", ""];
-        sheet.appendRow(newRow);
+        sheet.appendRow(["'" + dateStr, durationHrs, subject, durationHrs]);
       }
       
     } else {
-      var newRow = [dateStr, durationHrs, subject, durationHrs, "", "", "", "", "", "", "", ""];
-      sheet.appendRow(newRow);
+      sheet.appendRow(["'" + dateStr, durationHrs, subject, durationHrs]);
     }
     
     return ContentService.createTextOutput(JSON.stringify({ "status": "success" })).setMimeType(ContentService.MimeType.JSON);
@@ -1276,7 +1298,7 @@ function doPost(e) {
                 datasetLabel = "Study Hours per Month";
                 
                 const monthMap = {};
-                for (let i = 5; i >= 0; i--) {
+                for (let i = 11; i >= 0; i--) { // Expanded to 12 months for better history
                     const d = new Date();
                     d.setMonth(d.getMonth() - i);
                     const keyStr = `${d.getFullYear()}-${d.getMonth()}`;
@@ -1303,7 +1325,7 @@ function doPost(e) {
                 
                 const yearMap = {};
                 const currentYear = new Date().getFullYear();
-                for (let i = 2; i >= 0; i--) {
+                for (let i = 4; i >= 0; i--) { // Expanded to 5 years
                     const yearKey = currentYear - i;
                     yearMap[yearKey] = 0;
                     labels.push(yearKey.toString());
@@ -1616,8 +1638,11 @@ function doPost(e) {
         window.addEventListener('DOMContentLoaded', () => {
             setTimeout(() => {
                 if (state && state.settings) {
-                    state.settings.googleWebhookUrl = "https://script.google.com/macros/s/AKfycbyrgMpd3dn5TC-VZkhsktZuQLBvhdp6Co-U5UDFLA2ReBOGVTTNLgNLwUruQe5_4E2R/exec";
-                    saveLocalBackup();
+                    // Update cache if they were stuck on the old testing URL
+                    if (state.settings.googleWebhookUrl.includes("AKfycbyrgMpd3dn5TC-VZkhsktZuQLBvhdp6Co-U5UDFLA2ReBOGVTTNLgNLwUruQe5_4E2R")) {
+                        state.settings.googleWebhookUrl = "https://script.google.com/macros/s/AKfycbx9TCNjtGEMyAmb5tpqA6-IA7LPlCOHR47HtbQNGrE8MbID1_uU86XVMxgJrehRunGl/exec";
+                        saveLocalBackup();
+                    }
                     console.log("Auto-fetching data from Google Sheets...");
                     fetchFromGoogleSheets();
                 }
