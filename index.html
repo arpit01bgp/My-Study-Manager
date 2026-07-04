@@ -105,8 +105,8 @@
 
     <!-- Header Frame -->
     <header class="absolute top-8 left-8 z-10 flex flex-col pointer-events-auto">
-        <h1 class="font-cursive text-5xl md:text-6xl drop-shadow-md tracking-wide">MyStudyManager.io</h1>
-        <p class="text-[10px] uppercase tracking-[0.4em] ml-2 mt-1 opacity-70 font-semibold drop-shadow-sm">by ARPIT &middot; Custom Segments</p>
+        <h1 class="font-cursive text-5xl md:text-6xl drop-shadow-md tracking-wide">studywithme.io</h1>
+        <p class="text-[10px] uppercase tracking-[0.4em] ml-2 mt-1 opacity-70 font-semibold drop-shadow-sm">by Gridfiti &middot; Custom Segments</p>
     </header>
 
     <!-- Top Right Controls -->
@@ -419,6 +419,26 @@
 
     </div>
 
+    <!-- Custom Confirm Modal Overlay to completely avoid native confirm popups -->
+    <div id="modal-confirm" class="fixed inset-0 bg-black/80 backdrop-blur-sm z-[60] hidden flex items-center justify-center p-4">
+        <div class="glass-panel-dark text-white rounded-2xl w-full max-w-sm p-6 space-y-4 shadow-2xl border border-red-500/30">
+            <h3 class="text-lg font-bold text-red-400 flex items-center gap-2">
+                <i class="fa-solid fa-triangle-exclamation"></i> Clear Study History?
+            </h3>
+            <p class="text-xs text-white/75 leading-relaxed">
+                This action is irreversible and will completely delete your local and synced session records. Do you wish to proceed?
+            </p>
+            <div class="flex gap-3 pt-2">
+                <button id="btn-confirm-cancel" class="flex-1 bg-white/10 hover:bg-white/20 text-white font-semibold py-2 rounded-xl text-xs transition">
+                    Cancel
+                </button>
+                <button id="btn-confirm-proceed" class="flex-1 bg-red-500/80 hover:bg-red-600 text-white font-semibold py-2 rounded-xl text-xs transition">
+                    Yes, Clear All
+                </button>
+            </div>
+        </div>
+    </div>
+
     <!-- Feedback Notification Toasts -->
     <div id="toast-notify" class="fixed top-8 right-8 bg-white text-gray-800 px-5 py-3 rounded-2xl shadow-2xl transform translate-x-[150%] transition-transform duration-300 z-50 font-medium flex items-center gap-2 text-xs">
         <i id="toast-notify-icon" class="fa-solid fa-circle-check text-green-500 text-sm"></i>
@@ -431,7 +451,6 @@
         import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
         import { getFirestore, collection, addDoc, onSnapshot, serverTimestamp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
-        // Wallpapers carousel
         const wallpapers = [
             'https://images.unsplash.com/photo-1493246507139-91e8fad9978e?ixid=M3wxMjA3fDB8MHxwaG90by1wYWdlfHx8fGVufDB8fHx8fA%3D%3D&auto=format&fit=crop&w=2560&q=80', // Pink cherry blossom Tokyo
             'https://images.unsplash.com/photo-1507525428034-b723cf961d3e?ixid=M3wxMjA3fDB8MHxwaG90by1wYWdlfHx8fGVufDB8fHx8fA%3D%3D&auto=format&fit=crop&w=2560&q=80', // Beach shore sunset
@@ -452,6 +471,7 @@
         // --- Application State ---
         let state = {
             currentMode: 'study', // 'study', 'short', 'long'
+            currentChartType: 'weekly', // Track active chart tab
             timeLeft: 120 * 60,  // Defaults dynamically to Math segment time (120 min)
             isRunning: false,
             timerId: null,
@@ -471,7 +491,7 @@
                 autoStartSegments: false,
                 longBreakInterval: 4,
                 alarmSound: 'bell',
-                googleWebhookUrl: 'https://script.google.com/macros/s/AKfycbxgH_MN0kICFD2cWkH9EOEhX54CLYMgufg-GE6Sj8BEsCh8VPlgRYmglUVM3Xy3HASl/exec', // YOUR APPS WEBHOOK INTEGRATED
+                googleWebhookUrl: 'https://script.google.com/macros/s/AKfycbyrgMpd3dn5TC-VZkhsktZuQLBvhdp6Co-U5UDFLA2ReBOGVTTNLgNLwUruQe5_4E2R/exec', // YOUR APPS WEBHOOK INTEGRATED
                 motivationEnabled: true
             },
 
@@ -482,6 +502,35 @@
                 { id: '3', name: 'Physics', durationMins: 90, active: false }
             ]
         };
+
+        // Formats Date objects consistently to MM/DD/YYYY with strict 2-digit padding
+        function getFormattedMMDDYYYY(dateObj) {
+            const d = dateObj || new Date();
+            const month = String(d.getMonth() + 1).padStart(2, '0');
+            const day = String(d.getDate()).padStart(2, '0');
+            const year = d.getFullYear();
+            return `${month}/${day}/${year}`;
+        }
+
+        // Safe parser for MM/DD/YYYY formats that avoids browser locale flipping
+        function parseDateSafely(dateInput) {
+            if (!dateInput) return new Date();
+            if (dateInput instanceof Date) return dateInput;
+            
+            if (typeof dateInput === 'string' && dateInput.includes('/')) {
+                const parts = dateInput.split('/');
+                if (parts.length === 3) {
+                    const m = parseInt(parts[0], 10) - 1;
+                    const d = parseInt(parts[1], 10);
+                    const y = parseInt(parts[2], 10);
+                    if (!isNaN(m) && !isNaN(d) && !isNaN(y)) {
+                        return new Date(y, m, d);
+                    }
+                }
+            }
+            const parsed = new Date(dateInput);
+            return isNaN(parsed.getTime()) ? new Date() : parsed;
+        }
 
         // --- UI Dom Cache ---
         const bgImage = document.getElementById('bg-image');
@@ -498,6 +547,7 @@
         const modalSegments = document.getElementById('modal-segments');
         const modalAnalytics = document.getElementById('modal-analytics');
         const modalSettings = document.getElementById('modal-settings');
+        const modalConfirm = document.getElementById('modal-confirm');
 
         // Audio Context initialization for synthesized sounds
         let audioCtx = null;
@@ -590,8 +640,9 @@
 
         // RULE 1: Strict Paths for personal session entries
         async function logSessionToCloud(subjectName, durationMins) {
+            const formattedDate = getFormattedMMDDYYYY(new Date());
             const tempSession = {
-                date: new Date().toISOString(),
+                date: formattedDate,
                 subject: subjectName,
                 duration: durationMins,
                 timestamp: Date.now()
@@ -606,7 +657,7 @@
             try {
                 const collectionRef = collection(db, 'artifacts', appId, 'users', state.user.uid, 'sessions');
                 await addDoc(collectionRef, {
-                    date: new Date().toISOString(),
+                    date: formattedDate,
                     subject: subjectName,
                     duration: durationMins,
                     timestamp: serverTimestamp()
@@ -727,9 +778,16 @@
                 const result = await response.json();
                 
                 if (result && result.status === 'success' && result.sessions) {
-                    state.sessions = result.sessions; // Overwrite local sessions with sheet data
+                    // All dates received are strictly parsed with MM/DD/YYYY validation
+                    state.sessions = result.sessions; 
                     saveLocalBackup();
                     updateDashboardMetrics(); // Automatically updates the compare data charts
+                    
+                    // Re-render chart dynamically if the user has the analytics modal open
+                    if (!document.getElementById('modal-analytics').classList.contains('hidden')) {
+                        renderAnalyticsChart(state.currentChartType);
+                    }
+                    
                     showToast("Synchronized with Google Sheets.");
                 } else {
                     throw new Error("Invalid response format");
@@ -743,7 +801,7 @@
                 const sevenDaysAgo = Date.now() - (7 * 24 * 60 * 60 * 1000);
                 let weeklyTotalMins = 0;
                 state.sessions.forEach(session => {
-                    const sessionTime = new Date(session.date).getTime();
+                    const sessionTime = parseDateSafely(session.date).getTime();
                     if (sessionTime >= sevenDaysAgo) {
                         weeklyTotalMins += parseInt(session.duration) || 0;
                     }
@@ -756,8 +814,8 @@
             if (!state.settings.googleWebhookUrl) return;
             try {
                 const payload = {
-                    date: new Date().toLocaleDateString(),
-                    time: new Date().toLocaleTimeString(),
+                    date: getFormattedMMDDYYYY(new Date()), // Strict MM/DD/YYYY formatted string matching Sheets
+                    time: new Date().toLocaleTimeString('en-US'),
                     subject: subjectName,
                     duration: duration,
                     mode: 'Segment Completed'
@@ -779,17 +837,15 @@
             }
         }
 
-        // Generate custom Google Apps Script code snippet for copying
+        // Generate custom Google Apps Script code snippet with strict date normalizations
         function generateAppsScriptSnippet() {
             return `/*
-  Google Apps Script: Advanced Daily Segment Tracker
+  Google Apps Script: Advanced Daily Segment Tracker (MM/DD/YYYY Alignment)
   Instructions:
-  1. Open a Google Sheet.
+  1. Open your Google Sheet.
   2. Click Extensions -> Apps Script.
   3. Delete all code, paste this script, and click Save.
-  4. Click "Deploy" -> "New deployment" -> Select "Web app".
-  5. Change "Who has access" to "Anyone".
-  6. Copy the Web App URL and paste it into the Settings tab.
+  4. Click "Deploy" -> "New deployment" -> Select "Web app" -> Anyone can access -> Deploy.
 */
 
 function doGet(e) {
@@ -800,12 +856,30 @@ function doGet(e) {
     var sessions = [];
     
     if (values.length > 1) {
-      // Skip header row
       for (var i = 1; i < values.length; i++) {
         var row = values[i];
-        var dateStr = row[0];
         
-        // Loop segment columns (Segment 1 is cols 2&3, Segment 2 is cols 4&5, etc.)
+        var rawDate = row[0];
+        var dateStr = "";
+        
+        if (rawDate instanceof Date) {
+          var month = ('0' + (rawDate.getMonth() + 1)).slice(-2);
+          var day = ('0' + rawDate.getDate()).slice(-2);
+          var year = rawDate.getFullYear();
+          dateStr = month + '/' + day + '/' + year;
+        } else if (rawDate) {
+          // Normalize existing string formats to strict MM/DD/YYYY
+          var strParts = String(rawDate).split('/');
+          if (strParts.length === 3) {
+            var m = ('0' + parseInt(strParts[0], 10)).slice(-2);
+            var d = ('0' + parseInt(strParts[1], 10)).slice(-2);
+            var y = strParts[2];
+            dateStr = m + '/' + d + '/' + y;
+          } else {
+            dateStr = String(rawDate);
+          }
+        }
+        
         for (var col = 2; col <= 10; col += 2) {
           var subject = row[col];
           var durationHrs = parseFloat(row[col+1]);
@@ -814,7 +888,7 @@ function doGet(e) {
             sessions.push({
               date: dateStr,
               subject: subject,
-              duration: durationHrs * 60 // Converting back to minutes for app internals
+              duration: durationHrs * 60
             });
           }
         }
@@ -834,72 +908,97 @@ function doPost(e) {
     var sheet = SpreadsheetApp.getActiveSpreadsheet().getActiveSheet();
     var data = JSON.parse(e.postData.contents);
     
-    var dateStr = data.date;
+    var dateStr = data.date; // already sent as MM/DD/YYYY from browser
     var subject = data.subject;
     var durationMins = parseInt(data.duration);
-    var durationHrs = durationMins / 60; // Convert to hours
+    var durationHrs = durationMins / 60; 
     
-    // Auto insert headers if sheet is empty
     if (sheet.getLastRow() === 0) {
       sheet.appendRow(["Day", "Total Hours Studied", "Segment 1 Name", "Segment 1 Time (hrs)", "Segment 2 Name", "Segment 2 Time (hrs)", "Segment 3 Name", "Segment 3 Time (hrs)", "Segment 4 Name", "Segment 4 Time (hrs)", "Segment 5 Name", "Segment 5 Time (hrs)"]);
     }
     
     var dataRange = sheet.getDataRange();
     var values = dataRange.getValues();
-    var rowIndex = -1;
     
-    // Find if the current Day already exists in the sheet
-    for (var i = 0; i < values.length; i++) {
-      if (String(values[i][0]) === String(dateStr)) {
-        rowIndex = i + 1; // 1-based index for sheet ranges
-        break;
-      }
-    }
+    var matchFound = false;
+    var targetRowIndex = -1;
+    var targetColIndex = -1;
+    var lastRowIndexForDate = -1;
     
-    if (rowIndex === -1) {
-      // New day: Create a new row
-      var newRow = [dateStr, durationHrs, subject, durationHrs, "", "", "", "", "", "", "", ""];
-      sheet.appendRow(newRow);
-    } else {
-      // Day exists: Update the existing row
-      var rowData = values[rowIndex - 1];
+    // Normalize date elements during compare to resolve mm/dd swapping
+    for (var i = 1; i < values.length; i++) {
+      var cellVal = values[i][0];
+      var cellDateStr = "";
       
-      // Update Total Hours
-      var totalHrs = parseFloat(rowData[1] || 0) + durationHrs;
-      sheet.getRange(rowIndex, 2).setValue(totalHrs);
-      
-      var updated = false;
-      // Loop through columns to find matching subject or empty slot
-      for (var colIndex = 2; colIndex <= 10; colIndex += 2) {
-        var existingSubject = rowData[colIndex];
-        
-        if (existingSubject === subject) {
-          // Subject matches, add time
-          var existingTime = parseFloat(rowData[colIndex + 1] || 0);
-          sheet.getRange(rowIndex, colIndex + 2).setValue(existingTime + durationHrs);
-          updated = true;
-          break;
+      if (cellVal instanceof Date) {
+        var month = ('0' + (cellVal.getMonth() + 1)).slice(-2);
+        var day = ('0' + cellVal.getDate()).slice(-2);
+        var year = cellVal.getFullYear();
+        cellDateStr = month + '/' + day + '/' + year;
+      } else if (cellVal) {
+        var strParts = String(cellVal).split('/');
+        if (strParts.length === 3) {
+          var m = ('0' + parseInt(strParts[0], 10)).slice(-2);
+          var d = ('0' + parseInt(strParts[1], 10)).slice(-2);
+          var y = strParts[2];
+          cellDateStr = m + '/' + d + '/' + y;
+        } else {
+          cellDateStr = String(cellVal);
         }
       }
       
-      // If subject not found, place in the first empty segment slot
-      if (!updated) {
-        for (var colIndex = 2; colIndex <= 10; colIndex += 2) {
-          if (!rowData[colIndex] || rowData[colIndex] === "") {
-            sheet.getRange(rowIndex, colIndex + 1).setValue(subject);
-            sheet.getRange(rowIndex, colIndex + 2).setValue(durationHrs);
-            updated = true;
+      if (cellDateStr === dateStr) {
+        lastRowIndexForDate = i + 1;
+        
+        // Search for subject in this row's 5 slots
+        for (var col = 2; col <= 10; col += 2) {
+          if (values[i][col] === subject) {
+            matchFound = true;
+            targetRowIndex = i + 1;
+            targetColIndex = col;
             break;
           }
         }
       }
     }
     
-    return ContentService.createTextOutput(JSON.stringify({ "status": "success" }))
-      .setMimeType(ContentService.MimeType.JSON);
+    if (matchFound) {
+      var existingTime = parseFloat(values[targetRowIndex - 1][targetColIndex + 1] || 0);
+      sheet.getRange(targetRowIndex, targetColIndex + 2).setValue(existingTime + durationHrs);
+      
+      var totalHrs = parseFloat(values[targetRowIndex - 1][1] || 0) + durationHrs;
+      sheet.getRange(targetRowIndex, 2).setValue(totalHrs);
+      
+    } else if (lastRowIndexForDate !== -1) {
+      var lastRowData = values[lastRowIndexForDate - 1];
+      var emptyColIndex = -1;
+      
+      for (var col = 2; col <= 10; col += 2) {
+        if (!lastRowData[col] || lastRowData[col] === "") {
+          emptyColIndex = col;
+          break;
+        }
+      }
+      
+      if (emptyColIndex !== -1) {
+        sheet.getRange(lastRowIndexForDate, emptyColIndex + 1).setValue(subject);
+        sheet.getRange(lastRowIndexForDate, emptyColIndex + 2).setValue(durationHrs);
+        
+        var totalHrs = parseFloat(lastRowData[1] || 0) + durationHrs;
+        sheet.getRange(lastRowIndexForDate, 2).setValue(totalHrs);
+      } else {
+        var newRow = [dateStr, durationHrs, subject, durationHrs, "", "", "", "", "", "", "", ""];
+        sheet.appendRow(newRow);
+      }
+      
+    } else {
+      var newRow = [dateStr, durationHrs, subject, durationHrs, "", "", "", "", "", "", "", ""];
+      sheet.appendRow(newRow);
+    }
+    
+    return ContentService.createTextOutput(JSON.stringify({ "status": "success" })).setMimeType(ContentService.MimeType.JSON);
   } catch (error) {
-    return ContentService.createTextOutput(JSON.stringify({ "status": "error", "message": error.toString() }))
-      .setMimeType(ContentService.MimeType.JSON);
+    return ContentService.createTextOutput(JSON.stringify({ "status": "error", "message": error.toString() })).setMimeType(ContentService.MimeType.JSON);
   }
 }`;
         }
@@ -931,7 +1030,6 @@ function doPost(e) {
             if (modeId === 'study') {
                 document.getElementById('btn-study').classList.add('mode-btn-active');
                 const activeSeg = getActiveSegment();
-                // FIX: Ensure study segment timer always uses the exact customized duration configured for active segment
                 state.timeLeft = activeSeg ? (activeSeg.durationMins * 60) : (state.settings.durations.study * 60);
             } else if (modeId === 'short') {
                 document.getElementById('btn-short').classList.add('mode-btn-active');
@@ -1081,7 +1179,8 @@ function doPost(e) {
             const thirtyDaysAgo = Date.now() - (30 * 24 * 60 * 60 * 1000);
 
             state.sessions.forEach(session => {
-                const sessionTime = new Date(session.date).getTime();
+                // Parse date with standardized locale alignment
+                const sessionTime = parseDateSafely(session.date).getTime();
                 const duration = parseInt(session.duration) || 0;
 
                 if (sessionTime >= sevenDaysAgo) {
@@ -1147,33 +1246,36 @@ function doPost(e) {
             if (type === 'weekly') {
                 document.getElementById('btn-chart-weekly').className = "px-3 py-1 bg-white/15 hover:bg-white/25 rounded font-bold text-white transition";
                 chartType = 'bar';
-                datasetLabel = "Study Minutes per Day";
+                datasetLabel = "Study Hours per Day";
                 
                 const dayMap = {};
                 for (let i = 6; i >= 0; i--) {
                     const d = new Date();
                     d.setDate(d.getDate() - i);
-                    const localeStr = d.toLocaleDateString();
-                    dayMap[localeStr] = 0;
+                    // Bulletproof matching key independent of timezone
+                    const keyStr = `${d.getFullYear()}-${d.getMonth()+1}-${d.getDate()}`;
+                    dayMap[keyStr] = 0;
                     labels.push(d.toLocaleDateString('en-US', { weekday: 'short', day: 'numeric' }));
                 }
 
                 state.sessions.forEach(s => {
-                    const sessionLocale = new Date(s.date).toLocaleDateString();
-                    if (dayMap[sessionLocale] !== undefined) {
-                        dayMap[sessionLocale] += s.duration;
+                    const sDate = parseDateSafely(s.date);
+                    if (!isNaN(sDate.getTime())) {
+                        const keyStr = `${sDate.getFullYear()}-${sDate.getMonth()+1}-${sDate.getDate()}`;
+                        if (dayMap[keyStr] !== undefined) {
+                            dayMap[keyStr] += (s.duration / 60); // Convert mins to hours for graphing
+                        }
                     }
                 });
 
-                datasetsData = Object.values(dayMap);
+                datasetsData = Object.values(dayMap).map(v => Number(v.toFixed(2)));
 
             } else if (type === 'monthly') {
                 document.getElementById('btn-chart-monthly').className = "px-3 py-1 bg-white/15 hover:bg-white/25 rounded font-bold text-white transition";
                 chartType = 'line';
-                datasetLabel = "Study hours per Month";
+                datasetLabel = "Study Hours per Month";
                 
                 const monthMap = {};
-                // Group by last 6 months
                 for (let i = 5; i >= 0; i--) {
                     const d = new Date();
                     d.setMonth(d.getMonth() - i);
@@ -1183,19 +1285,21 @@ function doPost(e) {
                 }
 
                 state.sessions.forEach(s => {
-                    const sDate = new Date(s.date);
-                    const keyStr = `${sDate.getFullYear()}-${sDate.getMonth()}`;
-                    if (monthMap[keyStr] !== undefined) {
-                        monthMap[keyStr] += (s.duration / 60); // Save as hours
+                    const sDate = parseDateSafely(s.date);
+                    if (!isNaN(sDate.getTime())) {
+                        const keyStr = `${sDate.getFullYear()}-${sDate.getMonth()}`;
+                        if (monthMap[keyStr] !== undefined) {
+                            monthMap[keyStr] += (s.duration / 60);
+                        }
                     }
                 });
 
-                datasetsData = Object.values(monthMap);
+                datasetsData = Object.values(monthMap).map(v => Number(v.toFixed(2)));
 
             } else if (type === 'yearly') {
                 document.getElementById('btn-chart-yearly').className = "px-3 py-1 bg-white/15 hover:bg-white/25 rounded font-bold text-white transition";
                 chartType = 'bar';
-                datasetLabel = "Study hours per Year";
+                datasetLabel = "Study Hours per Year";
                 
                 const yearMap = {};
                 const currentYear = new Date().getFullYear();
@@ -1206,28 +1310,31 @@ function doPost(e) {
                 }
 
                 state.sessions.forEach(s => {
-                    const sYear = new Date(s.date).getFullYear();
-                    if (yearMap[sYear] !== undefined) {
-                        yearMap[sYear] += (s.duration / 60);
+                    const sDate = parseDateSafely(s.date);
+                    if (!isNaN(sDate.getTime())) {
+                        const sYear = sDate.getFullYear();
+                        if (yearMap[sYear] !== undefined) {
+                            yearMap[sYear] += (s.duration / 60);
+                        }
                     }
                 });
 
-                datasetsData = Object.values(yearMap);
+                datasetsData = Object.values(yearMap).map(v => Number(v.toFixed(2)));
 
             } else if (type === 'subject') {
                 document.getElementById('btn-chart-subject').className = "px-3 py-1 bg-white/15 hover:bg-white/25 rounded font-bold text-white transition";
                 chartType = 'doughnut';
-                datasetLabel = "Subject Comparison (hours)";
+                datasetLabel = "Subject Comparison (Hours)";
                 
                 const subMap = {};
                 state.sessions.forEach(s => {
                     const rawName = (s.subject || 'General Focus').trim();
                     const name = rawName.charAt(0).toUpperCase() + rawName.slice(1).toLowerCase();
-                    subMap[name] = (subMap[name] || 0) + (s.duration / 60); // Convert to hours
+                    subMap[name] = (subMap[name] || 0) + (s.duration / 60); // Convert mins to hours
                 });
 
                 labels = Object.keys(subMap);
-                datasetsData = Object.values(subMap);
+                datasetsData = Object.values(subMap).map(v => Number(v.toFixed(2)));
                 
                 if (labels.length === 0) {
                     labels = ['No study sessions recorded yet'];
@@ -1293,12 +1400,14 @@ function doPost(e) {
             modalSegments.classList.add('hidden');
             modalAnalytics.classList.add('hidden');
             modalSettings.classList.add('hidden');
+            modalConfirm.classList.add('hidden');
 
             modalEl.classList.remove('hidden');
         }
 
         function hideAllModals() {
             modalBackdrop.classList.add('hidden');
+            modalConfirm.classList.add('hidden');
         }
 
         document.querySelectorAll('.close-modal').forEach(btn => {
@@ -1323,7 +1432,6 @@ function doPost(e) {
 
         // Toggle Settings panel
         document.getElementById('btn-settings').addEventListener('click', () => {
-            // Preset UI settings from state
             document.getElementById('setting-short-dur').value = state.settings.durations.short;
             document.getElementById('setting-long-dur').value = state.settings.durations.long;
             document.getElementById('setting-autostart-breaks').checked = state.settings.autoStartBreaks;
@@ -1350,7 +1458,6 @@ function doPost(e) {
 
             saveLocalBackup();
             
-            // Adjust running timer if study mode is in progress
             if (!state.isRunning) {
                 setMode(state.currentMode);
             }
@@ -1359,20 +1466,27 @@ function doPost(e) {
         });
 
         // Compare graph buttons listener
-        document.getElementById('btn-chart-weekly').addEventListener('click', () => renderAnalyticsChart('weekly'));
-        document.getElementById('btn-chart-monthly').addEventListener('click', () => renderAnalyticsChart('monthly'));
-        document.getElementById('btn-chart-yearly').addEventListener('click', () => renderAnalyticsChart('yearly'));
-        document.getElementById('btn-chart-subject').addEventListener('click', () => renderAnalyticsChart('subject'));
+        document.getElementById('btn-chart-weekly').addEventListener('click', () => { state.currentChartType = 'weekly'; renderAnalyticsChart('weekly'); });
+        document.getElementById('btn-chart-monthly').addEventListener('click', () => { state.currentChartType = 'monthly'; renderAnalyticsChart('monthly'); });
+        document.getElementById('btn-chart-yearly').addEventListener('click', () => { state.currentChartType = 'yearly'; renderAnalyticsChart('yearly'); });
+        document.getElementById('btn-chart-subject').addEventListener('click', () => { state.currentChartType = 'subject'; renderAnalyticsChart('subject'); });
 
-        // Delete all statistics trigger
+        // Custom Confirmation dialog for history erasure
         document.getElementById('btn-reset-analytics-history').addEventListener('click', () => {
-            if (confirm("Are you sure you want to completely erase all of your study history data? This cannot be undone.")) {
-                state.sessions = [];
-                saveLocalBackup();
-                updateDashboardMetrics();
-                renderAnalyticsChart('weekly');
-                showToast("Study history cleared.", true);
-            }
+            modalConfirm.classList.remove('hidden');
+        });
+
+        document.getElementById('btn-confirm-cancel').addEventListener('click', () => {
+            modalConfirm.classList.add('hidden');
+        });
+
+        document.getElementById('btn-confirm-proceed').addEventListener('click', () => {
+            state.sessions = [];
+            saveLocalBackup();
+            updateDashboardMetrics();
+            renderAnalyticsChart('weekly');
+            modalConfirm.classList.add('hidden');
+            showToast("Study history cleared.", true);
         });
 
         // Add Segment Form submit
@@ -1404,7 +1518,6 @@ function doPost(e) {
             document.getElementById('input-subj-hrs').value = '1';
             document.getElementById('input-subj-mins').value = '0';
             
-            // If we just added the very first segment or activated it, synchronize the timer
             if (newSeg.active) {
                 setMode('study');
             }
@@ -1422,7 +1535,6 @@ function doPost(e) {
                 const isWasActive = state.queue.find(q => q.id === id)?.active;
                 state.queue = state.queue.filter(q => q.id !== id);
 
-                // If deleted active element, set next active
                 if (isWasActive && state.queue.length > 0) {
                     state.queue[0].active = true;
                 }
@@ -1479,13 +1591,11 @@ function doPost(e) {
             saveLocalBackup();
         });
 
-        // Cycle motivation quote on timer resets
         function cycleMotivationQuote() {
             const idx = Math.floor(Math.random() * quotes.length);
             document.getElementById('motivation-text').textContent = quotes[idx];
         }
 
-        // Test audio alarms button
         document.getElementById('btn-test-complete-sound').addEventListener('click', () => {
             const testType = document.getElementById('setting-completion-alarm').value;
             playSegmentAlert(testType);
@@ -1498,22 +1608,17 @@ function doPost(e) {
             cycleMotivationQuote();
         });
 
-        // Button mode triggers
         document.getElementById('btn-study').addEventListener('click', () => setMode('study'));
         document.getElementById('btn-short').addEventListener('click', () => setMode('short'));
         document.getElementById('btn-long').addEventListener('click', () => setMode('long'));
 
         // --- Auto-Sync on App Load ---
         window.addEventListener('DOMContentLoaded', () => {
-            // Wait 1 second to ensure local state is initialized
             setTimeout(() => {
-                // Hardcode your specific URL into settings so it persists and works instantly
                 if (state && state.settings) {
-                    if (!state.settings.googleWebhookUrl || state.settings.googleWebhookUrl === "") {
-                        state.settings.googleWebhookUrl = "https://script.google.com/macros/s/AKfycbxgH_MN0kICFD2cWkH9EOEhX54CLYMgufg-GE6Sj8BEsCh8VPlgRYmglUVM3Xy3HASl/exec";
-                        saveLocalBackup();
-                    }
-                    console.log("Auto-fetching data from Google Sheets to compare stats...");
+                    state.settings.googleWebhookUrl = "https://script.google.com/macros/s/AKfycbyrgMpd3dn5TC-VZkhsktZuQLBvhdp6Co-U5UDFLA2ReBOGVTTNLgNLwUruQe5_4E2R/exec";
+                    saveLocalBackup();
+                    console.log("Auto-fetching data from Google Sheets...");
                     fetchFromGoogleSheets();
                 }
             }, 1000);
